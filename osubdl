@@ -1,0 +1,199 @@
+#!/bin/sh
+
+# --------------------------------------
+# generic
+
+# NIL --> STRING
+# Read from stdin until eof hit; return all input--
+# good for writing functions that take piped info.
+function reade {
+	local stack=""
+
+	while read input; do
+		stack="$(printf '%s\n%s' "$stack" "$input")"
+	done
+
+	echo "$stack"
+}
+
+# STRING STRING --> STRING
+# Replace the file-extension of a filename with another.
+function replace_file_ext {
+	local filename="$1"
+	local ext="$2"
+	
+	local new_filename="$(echo "$filename" | sed 's%\....$%\.'"$ext"'%')"
+
+	if test "$new_filename" = "$filename"; then
+		echo "${filename}.${ext}"
+	else
+		echo "${new_filename}"
+	fi	
+}	
+
+
+
+#---------------------------------------
+
+# STRING --> STRING
+# Hash a video file.
+function vhash {
+	local file="$1"
+	./oshash "$file"
+}
+
+
+
+#---------------------------------------
+
+# STRING STRING --> STRING
+# Get search results/subtitle-page of a file of certain hash and language.
+# Make sure the second argument, $lang, is set to the 3-char language code,
+# *not* the 2-char. I.E., "esp" over "es"
+function search {
+	local hash="$1"
+	local lang="$2"
+
+	local url="https://www.opensubtitles.org/en/search"
+	url="${url}/sublanguageid-${lang}"
+	url="${url}/moviehash-${hash}"
+
+	./gendl "$url"
+}
+
+# |STRING --> [BOOLEAN]
+# Return 0 if page is a search-results; 1 if it's a subtitle page.
+# Sometimes, when searching for a file, it'll redirect you to the only result;
+# other times, it lists results. So we need this. :p
+function search_resultsp {
+	local html="$(reade)"
+
+	local result="$(echo "$html" | grep "Subtitles -" | grep -v "img wid")"
+
+	if test -z "$result"; then
+		return 1
+	else
+		return 0
+	fi
+}
+
+# --------------------------------------
+
+# |STRING --> STRING
+# Return the dl.opensubtitles URL, from the given subtitle page HTML.
+function subtitle_dl_url {
+	local html="$(reade)"
+
+	echo "$html" \
+	| grep "subtitleserve" \
+	| grep "directUrl" \
+	| head -1 \
+	| sed 's/.*=.//' \
+	| sed 's/.;//' \
+	| sed 's%.*/%%' \
+	| sed 's%^%https://dl.opensubtitles.org/en/download/sub/%'
+}
+
+# STRING --> STRING
+# Return the regular subtitle-page URL from the dl.opensubtitles URL.
+function subtitle_url {
+	local dl_url="$1"
+	local temp="$(mktemp)"
+
+	curl --verbose "$dl_url" \
+	2> $temp
+
+	grep "location:" $temp \
+	| sed 's%.*location: %%'
+}
+
+# --------------------------------------
+
+# STRING STRING --> NIL
+# Download the subtitle zip of a video, from subpage URL and dl URL.
+function subtitle_get {
+	local url="$1"
+	local dl_url="$2"
+	local dest="$3"
+
+	local temp="/tmp/$(echo "$RANDOM")"
+
+	mkdir "$temp"
+	useragent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+	curl -s $dl_url \
+		-H 'authority: dl.opensubtitles.org' \
+		-H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+		-H 'accept-language: pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7' \
+		-H 'cache-control: no-cache' \
+		-H 'pragma: no-cache' \
+		-H 'sec-ch-ua: "Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"' \
+		-H 'sec-ch-ua-mobile: ?0' \
+		-H 'sec-ch-ua-platform: "macOS"' \
+		-H 'sec-fetch-dest: document' \
+		-H 'sec-fetch-mode: navigate' \
+		-H 'sec-fetch-site: none' \
+		-H 'sec-fetch-user: ?1' \
+		-H 'upgrade-insecure-requests: 1' \
+		-H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' \
+		--compressed -o  "${temp}/sub.zip"
+	
+	unzip -qq -d "$temp" "${temp}/sub.zip"
+	mv ${temp}/*.srt "$dest"
+	rm -rf "${temp}"
+}
+
+# --------------------------------------
+
+# STRING STRING PATH --> NIL
+# Download a file's subtitles in given language to given path.
+function get_file_subs {
+	local file="$1"
+	local language="$2"
+	local dest="$3"
+
+	local hash="$(vhash "$file")"
+	local html="$(search "$hash" "$language")"
+
+	if echo "$html" | search_resultsp; then
+		echo "No results found."
+		return 3
+	fi
+
+	local dl_url="$(echo "$html" | subtitle_dl_url | tr -d '\r')"
+	local url="$(subtitle_url "$dl_url" | tr -d '\r')"
+
+	subtitle_get "$url" "$dl_url" "$dest"
+}
+
+
+
+# --------------------------------------
+# invocation
+
+function usage {
+	echo "usage: osubdl file [language] [path]"
+	echo "	'file' should be a video file."
+	echo "	'language' should be a three-char language code."
+	echo "	'path' should be the destination of the srt file."
+
+	exit 2
+}
+
+# --------------------------------------
+
+FILE="$1"
+LANGUAGE="$2"
+DESTINATION="$3"
+if test -z "$FILE"; then
+	usage
+elif test -z "$LANG"; then
+	LANGUAGE="pob"
+elif test -z "$DESTINATION"; then
+	DESTINATION="$(replace_file_ext "$FILE" "srt")"
+fi
+	
+# --------------------------------------
+
+echo "Downloading subtitles for $FILE"
+
+get_file_subs "$FILE" "$LANGUAGE" "$DESTINATION" && echo "Subtitles downloaded to $DESTINATION"

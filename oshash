@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+import sys
+import os
+import struct
+
+def usage():
+    print(f"Usage: {sys.argv[0]} <file>")
+    sys.exit(1)
+
+def compute_hash(filename):
+    try:
+        with open(filename, 'rb') as f:
+            filesize = os.path.getsize(filename)
+            hashval = filesize
+
+            if filesize < 65536 * 2:
+                print("Error: File is too small")
+                return
+
+            for x in range(65536//8):
+                buffer = f.read(8)
+                (chunk,) = struct.unpack('<Q', buffer)
+                hashval += chunk
+
+            f.seek(-65536, 2)
+
+            for x in range(65536//8):
+                buffer = f.read(8)
+                (chunk,) = struct.unpack('<Q', buffer)
+                hashval += chunk
+
+        return format(hashval, '016x')
+    except IOError:
+        usage()
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        usage()
+    
+    result = compute_hash(sys.argv[1])
+    if result is not None:
+        print(result[4:])
